@@ -1,17 +1,40 @@
 import '../../domain/entities/binder.dart';
 
 class CatalogCardModel extends CatalogCard {
-  CatalogCardModel({required super.id, required super.name, required super.imageUrl});
+  CatalogCardModel({
+    required super.id,
+    required super.name,
+    required super.imageUrl,
+    super.usdPrice,
+    super.eurPrice,
+    super.tcgPlayerPrice,
+    super.cardMarketPrice,
+    super.cardKingdomPrice,
+  });
 
   factory CatalogCardModel.fromJson(Map<String, dynamic> map) {
     return CatalogCardModel(
       id: map['id'],
       name: map['name'],
       imageUrl: map['imageUrl'],
+      usdPrice: (map['usdPrice'] as num?)?.toDouble(),
+      eurPrice: (map['eurPrice'] as num?)?.toDouble(),
+      tcgPlayerPrice: (map['tcgPlayerPrice'] as num?)?.toDouble(),
+      cardMarketPrice: (map['cardMarketPrice'] as num?)?.toDouble(),
+      cardKingdomPrice: (map['cardKingdomPrice'] as num?)?.toDouble(),
     );
   }
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'imageUrl': imageUrl};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'imageUrl': imageUrl,
+    'usdPrice': usdPrice,
+    'eurPrice': eurPrice,
+    'tcgPlayerPrice': tcgPlayerPrice,
+    'cardMarketPrice': cardMarketPrice,
+    'cardKingdomPrice': cardKingdomPrice,
+  };
 }
 
 class PocketModel extends Pocket {

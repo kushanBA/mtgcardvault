@@ -91,7 +91,12 @@ class EmptyState extends StatelessWidget {
 
 /// Pops a dialog showing [image] enlarged. Tapping outside it (or the ✕)
 /// dismisses it — use this as the tap target for any card thumbnail.
-Future<void> showEnlargedImage(BuildContext context, ImageProvider image) {
+/// Pass [priceLabel] (e.g. "\$12.34") to show a price badge over the image.
+Future<void> showEnlargedImage(
+  BuildContext context,
+  ImageProvider image, {
+  String? priceLabel,
+}) {
   return showDialog(
     context: context,
     barrierColor: const Color(0xE6000000),
@@ -118,6 +123,29 @@ Future<void> showEnlargedImage(BuildContext context, ImageProvider image) {
               ),
             ),
           ),
+          if (priceLabel != null)
+            Positioned(
+              bottom: 12,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xCC131316),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    priceLabel,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     ),

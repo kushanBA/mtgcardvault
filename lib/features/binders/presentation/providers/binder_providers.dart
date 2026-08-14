@@ -17,29 +17,48 @@ final binderRemoteDataSourceProvider = Provider<BinderRemoteDataSource>(
 );
 
 final binderRepositoryProvider = Provider<BinderRepository>(
-  (ref) => BinderRepositoryImpl(remote: ref.watch(binderRemoteDataSourceProvider)),
+  (ref) =>
+      BinderRepositoryImpl(remote: ref.watch(binderRemoteDataSourceProvider)),
 );
 
-final createBinderUseCaseProvider = Provider((ref) => CreateBinder(ref.watch(binderRepositoryProvider)));
-final getMyBindersUseCaseProvider = Provider((ref) => GetMyBinders(ref.watch(binderRepositoryProvider)));
-final getBinderUseCaseProvider = Provider((ref) => GetBinder(ref.watch(binderRepositoryProvider)));
-final updateBinderUseCaseProvider = Provider((ref) => UpdateBinder(ref.watch(binderRepositoryProvider)));
-final addCardToBinderUseCaseProvider = Provider((ref) => AddCardToBinder(ref.watch(binderRepositoryProvider)));
-final removeCardFromPocketUseCaseProvider =
-    Provider((ref) => RemoveCardFromPocket(ref.watch(binderRepositoryProvider)));
-final getPublicBindersUseCaseProvider = Provider((ref) => GetPublicBinders(ref.watch(binderRepositoryProvider)));
+final createBinderUseCaseProvider = Provider(
+  (ref) => CreateBinder(ref.watch(binderRepositoryProvider)),
+);
+final getMyBindersUseCaseProvider = Provider(
+  (ref) => GetMyBinders(ref.watch(binderRepositoryProvider)),
+);
+final getBinderUseCaseProvider = Provider(
+  (ref) => GetBinder(ref.watch(binderRepositoryProvider)),
+);
+final updateBinderUseCaseProvider = Provider(
+  (ref) => UpdateBinder(ref.watch(binderRepositoryProvider)),
+);
+final addCardToBinderUseCaseProvider = Provider(
+  (ref) => AddCardToBinder(ref.watch(binderRepositoryProvider)),
+);
+final removeCardFromPocketUseCaseProvider = Provider(
+  (ref) => RemoveCardFromPocket(ref.watch(binderRepositoryProvider)),
+);
+final getPublicBindersUseCaseProvider = Provider(
+  (ref) => GetPublicBinders(ref.watch(binderRepositoryProvider)),
+);
 
 final myBindersProvider = FutureProvider.autoDispose<List<Binder>>((ref) async {
   final either = await ref.watch(getMyBindersUseCaseProvider).call();
   return either.match((f) => throw f, (binders) => binders);
 });
 
-final binderDetailProvider = FutureProvider.autoDispose.family<Binder, String>((ref, id) async {
+final binderDetailProvider = FutureProvider.autoDispose.family<Binder, String>((
+  ref,
+  id,
+) async {
   final either = await ref.watch(getBinderUseCaseProvider).call(id);
   return either.match((f) => throw f, (binder) => binder);
 });
 
-final publicBindersProvider = FutureProvider.autoDispose<PublicBindersPage>((ref) async {
+final publicBindersProvider = FutureProvider.autoDispose<PublicBindersPage>((
+  ref,
+) async {
   final either = await ref.watch(getPublicBindersUseCaseProvider).call();
   return either.match((f) => throw f, (page) => page);
 });

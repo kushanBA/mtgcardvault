@@ -2,6 +2,7 @@ import 'package:flutter/material.dart' hide Card;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:provider/provider.dart';
 import '../../core/error/failure.dart';
+import '../../core/pricing/price_category.dart';
 import '../../features/binders/domain/entities/binder.dart' as api;
 import '../../features/binders/presentation/providers/binder_providers.dart';
 import '../../nav.dart';
@@ -212,6 +213,7 @@ class BinderDetailScreen extends ConsumerWidget {
     theme.AppColors t,
     api.Binder b,
     api.Pocket p,
+    PriceCategory priceCategory,
   ) {
     final width = MediaQuery.of(context).size.width * 0.28;
 
@@ -232,6 +234,8 @@ class BinderDetailScreen extends ConsumerWidget {
     }
 
     final card = p.catalogCard;
+    final price = card?.priceFor(priceCategory);
+    final priceLabel = price != null ? '\$${price.toStringAsFixed(2)}' : null;
     return Container(
       width: width,
       padding: const EdgeInsets.all(7),
@@ -249,6 +253,7 @@ class BinderDetailScreen extends ConsumerWidget {
                     ? () => ui.showEnlargedImage(
                         context,
                         NetworkImage(card.imageUrl),
+                        priceLabel: priceLabel,
                       )
                     : null,
                 child: ClipRRect(
@@ -278,6 +283,15 @@ class BinderDetailScreen extends ConsumerWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (priceLabel != null)
+                Text(
+                  priceLabel,
+                  style: TextStyle(
+                    color: t.muted,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
             ],
           ),
           Positioned(
@@ -310,6 +324,7 @@ class BinderDetailScreen extends ConsumerWidget {
     final nav = context.read<Nav>();
     final t = theme.exchange;
     final binderAsync = ref.watch(binderDetailProvider(binderId));
+    final priceCategory = ref.watch(priceCategoryProvider);
 
     return Container(
       color: t.bg,
@@ -338,6 +353,10 @@ class BinderDetailScreen extends ConsumerWidget {
         ),
         data: (b) {
           final filled = b.pockets.where((p) => !p.isEmpty).toList();
+          final totalValue = filled.fold<double>(
+            0,
+            (sum, p) => sum + (p.catalogCard?.priceFor(priceCategory) ?? 0),
+          );
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
             children: [
@@ -389,6 +408,17 @@ class BinderDetailScreen extends ConsumerWidget {
                 '${b.game.label} · ${filled.length}/9 pockets',
                 style: TextStyle(color: t.muted, fontSize: 12.5),
               ),
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Total value (${priceCategory.label}): \$${totalValue.toStringAsFixed(2)}',
+                  style: TextStyle(
+                    color: t.ink,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
               const SizedBox(height: 8),
               if (filled.isEmpty)
                 Padding(
@@ -420,7 +450,10 @@ class BinderDetailScreen extends ConsumerWidget {
                   spacing: 8,
                   runSpacing: 8,
                   children: b.pockets
-                      .map((p) => _pocketTile(context, ref, t, b, p))
+                      .map(
+                        (p) =>
+                            _pocketTile(context, ref, t, b, p, priceCategory),
+                      )
                       .toList(),
                 ),
               ),

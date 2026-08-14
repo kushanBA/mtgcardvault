@@ -1,3 +1,5 @@
+import '../../../../core/pricing/price_category.dart';
+
 class CardCatalog {
   final String name;
   final String setName;
@@ -18,6 +20,14 @@ class CardCatalog {
     required this.cardMarketPrice,
     required this.cardKingdomPrice,
   });
+}
+
+extension CardCatalogPricing on CardCatalog {
+  double priceFor(PriceCategory category) => switch (category) {
+    PriceCategory.tcgPlayer => tcgPlayerPrice,
+    PriceCategory.cardMarket => cardMarketPrice,
+    PriceCategory.cardKingdom => cardKingdomPrice,
+  };
 }
 
 class Card {

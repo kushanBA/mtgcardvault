@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:provider/provider.dart';
 import '../../data/store.dart';
 import '../../data/types.dart';
+import '../../core/pricing/price_category.dart';
 import '../../features/auth/presentation/providers/auth_providers.dart';
 import '../../theme.dart' as theme;
 import '../../widgets/ui.dart' as ui;
@@ -16,23 +17,11 @@ class ProfileScreen extends ConsumerStatefulWidget {
 
 class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   bool resetDone = false;
-  final priceCategoryList = [
-    'tcg price',
-    'card market price',
-    'card kindom price',
-  ];
-
-  late String selectedPriceCat;
-
-  @override
-  void initState() {
-    super.initState();
-    selectedPriceCat = priceCategoryList[0];
-  }
 
   @override
   Widget build(BuildContext context) {
     final store = context.watch<Store>();
+    final selectedPriceCat = ref.watch(priceCategoryProvider);
     final t = theme.light;
     final sold = store.listings
         .where((l) => l.status == ListingStatus.sold)
@@ -232,15 +221,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         'Price',
                         style: TextStyle(color: t.ink, fontSize: 13.5),
                       ),
-                      DropdownButton<String>(
+                      DropdownButton<PriceCategory>(
                         value: selectedPriceCat,
                         underline: const SizedBox(),
                         style: TextStyle(color: t.muted, fontSize: 12.5),
-                        items: priceCategoryList.map((i) {
-                          return DropdownMenuItem(value: i, child: Text(i));
+                        items: PriceCategory.values.map((c) {
+                          return DropdownMenuItem(value: c, child: Text(c.label));
                         }).toList(),
                         onChanged: (val) {
-                          setState(() => selectedPriceCat = val!);
+                          if (val != null) {
+                            ref.read(priceCategoryProvider.notifier).select(val);
+                          }
                         },
                       ),
                     ],

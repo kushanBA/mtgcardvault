@@ -1,3 +1,5 @@
+import '../../../../core/pricing/price_category.dart';
+
 enum Game { pokemon, mtg, yugioh, lorcana, onePiece, fleshAndBlood, other }
 
 extension GameApiValue on Game {
@@ -38,8 +40,30 @@ class CatalogCard {
   final String id;
   final String name;
   final String imageUrl;
+  final double? usdPrice;
+  final double? eurPrice;
+  final double? tcgPlayerPrice;
+  final double? cardMarketPrice;
+  final double? cardKingdomPrice;
 
-  CatalogCard({required this.id, required this.name, required this.imageUrl});
+  CatalogCard({
+    required this.id,
+    required this.name,
+    required this.imageUrl,
+    this.usdPrice,
+    this.eurPrice,
+    this.tcgPlayerPrice,
+    this.cardMarketPrice,
+    this.cardKingdomPrice,
+  });
+}
+
+extension CatalogCardPricing on CatalogCard {
+  double? priceFor(PriceCategory category) => switch (category) {
+    PriceCategory.tcgPlayer => tcgPlayerPrice,
+    PriceCategory.cardMarket => cardMarketPrice,
+    PriceCategory.cardKingdom => cardKingdomPrice,
+  };
 }
 
 class Pocket {

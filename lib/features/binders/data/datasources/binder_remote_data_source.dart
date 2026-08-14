@@ -13,7 +13,11 @@ abstract class BinderRemoteDataSource {
   Future<BinderModel> updateBinder(String id, {String? name, bool? isPublic});
   Future<BinderModel> addCardToBinder(String binderId, String catalogCardId);
   Future<void> removeCardFromPocket(String binderId, int position);
-  Future<PublicBindersPageModel> getPublicBinders({Game? game, int page, int pageSize});
+  Future<PublicBindersPageModel> getPublicBinders({
+    Game? game,
+    int page,
+    int pageSize,
+  });
 }
 
 class BinderRemoteDataSourceImpl implements BinderRemoteDataSource {
@@ -23,7 +27,10 @@ class BinderRemoteDataSourceImpl implements BinderRemoteDataSource {
   Failure _failureFrom(DioException e) {
     final data = e.response?.data;
     final message = data is Map ? data['message']?.toString() : null;
-    return Failure(error: message ?? e.toString(), code: e.response?.statusCode);
+    return Failure(
+      error: message ?? e.toString(),
+      code: e.response?.statusCode,
+    );
   }
 
   @override
@@ -46,7 +53,11 @@ class BinderRemoteDataSourceImpl implements BinderRemoteDataSource {
   Future<List<BinderModel>> getMyBinders() async {
     try {
       final response = await _dio.get(ApiEndpoints.binders);
-      return (response.data as List).map((b) => BinderModel.fromJson(b as Map<String, dynamic>)).toList();
+      final data = (response.data as List)
+          .map((b) => BinderModel.fromJson(b as Map<String, dynamic>))
+          .toList();
+      log(data[0].id);
+      return data;
     } on DioException catch (e) {
       throw _failureFrom(e);
     } catch (e) {
@@ -69,14 +80,15 @@ class BinderRemoteDataSourceImpl implements BinderRemoteDataSource {
   }
 
   @override
-  Future<BinderModel> updateBinder(String id, {String? name, bool? isPublic}) async {
+  Future<BinderModel> updateBinder(
+    String id, {
+    String? name,
+    bool? isPublic,
+  }) async {
     try {
       final response = await _dio.patch(
         ApiEndpoints.binder(id),
-        data: {
-          'name': ?name,
-          'isPublic': ?isPublic,
-        },
+        data: {'name': ?name, 'isPublic': ?isPublic},
       );
       return BinderModel.fromJson(response.data);
     } on DioException catch (e) {
@@ -88,7 +100,10 @@ class BinderRemoteDataSourceImpl implements BinderRemoteDataSource {
   }
 
   @override
-  Future<BinderModel> addCardToBinder(String binderId, String catalogCardId) async {
+  Future<BinderModel> addCardToBinder(
+    String binderId,
+    String catalogCardId,
+  ) async {
     try {
       final response = await _dio.post(
         ApiEndpoints.binderPockets(binderId),
@@ -116,7 +131,11 @@ class BinderRemoteDataSourceImpl implements BinderRemoteDataSource {
   }
 
   @override
-  Future<PublicBindersPageModel> getPublicBinders({Game? game, int page = 1, int pageSize = 20}) async {
+  Future<PublicBindersPageModel> getPublicBinders({
+    Game? game,
+    int page = 1,
+    int pageSize = 20,
+  }) async {
     try {
       final response = await _dio.get(
         ApiEndpoints.publicBinders,
