@@ -1,9 +1,8 @@
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api_endpoints.dart';
 import 'token_refresher.dart';
 
-final dioProvider = Provider<Dio>((ref) {
+Dio createDio() {
   final dio = Dio(BaseOptions(baseUrl: ApiEndpoints.baseUrl));
   final tokenRefresher = TokenRefresher(dio);
 
@@ -43,4 +42,4 @@ final dioProvider = Provider<Dio>((ref) {
     ),
   );
   return dio;
-});
+}

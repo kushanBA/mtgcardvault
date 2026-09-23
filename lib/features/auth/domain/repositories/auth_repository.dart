@@ -10,6 +10,8 @@ abstract class AuthRepository {
     String password,
   );
 
+  Future<Either<Failure, User>> loginWithGoogle();
+
   /// Restores a session cached from a previous login, if any.
   Future<Either<Failure, User?>> getCurrentUser();
 

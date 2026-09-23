@@ -19,9 +19,9 @@ class CardCatalogModel extends CardCatalog {
       imageUrl: map['imageUrl'],
       usdPrice: (map['usdPrice'] as num).toDouble(),
       eurPrice: (map['eurPrice'] as num).toDouble(),
-      tcgPlayerPrice: (map['tcgPlayerPrice'] as num).toDouble(),
-      cardMarketPrice: (map['cardMarketPrice'] as num).toDouble(),
-      cardKingdomPrice: (map['cardKingdomPrice'] as num).toDouble(),
+      tcgPlayerPrice: (map['tcgPlayerPrice'] as num?)?.toDouble() ?? 0,
+      cardMarketPrice: (map['cardMarketPrice'] as num?)?.toDouble() ?? 0,
+      cardKingdomPrice: (map['cardKingdomPrice'] as num?)?.toDouble() ?? 0,
     );
   }
 
@@ -68,7 +68,9 @@ class CardModel extends Card {
       image: map['image'],
       foil: map['foil'],
       nonfoil: map['nonfoil'],
-      catalog: map['catalog'] != null ? CardCatalogModel.fromJson(map['catalog']) : null,
+      catalog: map['catalog'] != null
+          ? CardCatalogModel.fromJson(map['catalog'])
+          : null,
     );
   }
 

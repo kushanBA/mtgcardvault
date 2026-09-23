@@ -61,7 +61,7 @@ class CatalogCard {
 extension CatalogCardPricing on CatalogCard {
   double? priceFor(PriceCategory category) => switch (category) {
     PriceCategory.tcgPlayer => tcgPlayerPrice,
-    PriceCategory.cardMarket => cardMarketPrice,
+    PriceCategory.usd => usdPrice,
     PriceCategory.cardKingdom => cardKingdomPrice,
   };
 }

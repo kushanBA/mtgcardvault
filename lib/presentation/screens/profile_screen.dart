@@ -1,31 +1,58 @@
 import 'package:flutter/material.dart' hide Card;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../data/store.dart';
-import '../../data/types.dart';
+import '../../core/di/injector.dart';
+import '../../core/error/failure.dart';
+import '../../core/pricing/bloc/price_category_bloc.dart';
+import '../../core/pricing/bloc/price_category_event.dart';
 import '../../core/pricing/price_category.dart';
-import '../../features/auth/presentation/providers/auth_providers.dart';
+import '../../features/auth/presentation/bloc/auth_bloc.dart';
+import '../../features/auth/presentation/bloc/auth_event.dart';
+import '../../features/profile/presentation/bloc/profile_bloc.dart';
+import '../../features/profile/presentation/bloc/profile_event.dart';
 import '../../theme.dart' as theme;
-import '../../widgets/ui.dart' as ui;
 
-class ProfileScreen extends ConsumerStatefulWidget {
+String _initials(String name) {
+  final parts = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((p) => p.isNotEmpty)
+      .toList();
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+  return (parts.first.substring(0, 1) + parts.last.substring(0, 1))
+      .toUpperCase();
+}
+
+class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
   @override
-  ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
+  Widget build(BuildContext context) {
+    return BlocProvider(
+      create: (_) => sl<ProfileBloc>()..add(const LoadProfile()),
+      child: const _ProfileView(),
+    );
+  }
 }
 
-class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+class _ProfileView extends StatefulWidget {
+  const _ProfileView();
+
+  @override
+  State<_ProfileView> createState() => _ProfileViewState();
+}
+
+class _ProfileViewState extends State<_ProfileView> {
   bool resetDone = false;
+  bool alertsSaving = false;
 
   @override
   Widget build(BuildContext context) {
     final store = context.watch<Store>();
-    final selectedPriceCat = ref.watch(priceCategoryProvider);
+    final selectedPriceCat = context.watch<PriceCategoryBloc>().state.category;
+    final profileAsync = context.watch<ProfileBloc>().state.profile;
     final t = theme.light;
-    final sold = store.listings
-        .where((l) => l.status == ListingStatus.sold)
-        .length;
     final publicBinders = store.binders.where((b) => b.isPublic).length;
 
     Widget row(
@@ -77,71 +104,94 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               border: Border.all(color: t.line),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 46,
-                      height: 46,
-                      decoration: BoxDecoration(
-                        color: t.accentBg,
-                        shape: BoxShape.circle,
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'CP',
-                        style: TextStyle(
-                          color: t.accent,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 16,
+            child: profileAsync.when(
+              initial: () => const Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
+              loading: () => const Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
+              error: (e, _) => Text(
+                e is Failure ? e.error : e.toString(),
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12.5),
+              ),
+              data: (profile) => Column(
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 46,
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: t.accentBg,
+                          shape: BoxShape.circle,
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          _initials(profile.name),
+                          style: TextStyle(
+                            color: t.accent,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'You',
-                            style: TextStyle(
-                              color: t.ink,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              profile.name,
+                              style: TextStyle(
+                                color: t.ink,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
-                          ),
-                          Text(
-                            'Collector since 2026',
-                            style: TextStyle(color: t.muted, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                    ui.Chip(
-                      label: '✓ Verified seller',
-                      bg: t.accentBg,
-                      color: t.accent,
-                    ),
-                  ],
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 14),
-                  child: Row(
-                    children: [
-                      _ProfileStat(value: '★ 5.0', label: 'rating', t: t),
-                      const SizedBox(width: 8),
-                      _ProfileStat(value: '$sold', label: 'sales', t: t),
-                      const SizedBox(width: 8),
-                      _ProfileStat(
-                        value: '$publicBinders',
-                        label: 'public binders',
-                        t: t,
+                            Text(
+                              'Collector since ${profile.createdAt.year}',
+                              style: TextStyle(color: t.muted, fontSize: 12),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
-                ),
-              ],
+                  Padding(
+                    padding: const EdgeInsets.only(top: 14),
+                    child: Row(
+                      children: [
+                        _ProfileStat(
+                          value: '${profile.salesCount}',
+                          label: 'sales',
+                          t: t,
+                        ),
+                        const SizedBox(width: 8),
+                        _ProfileStat(
+                          value: '$publicBinders',
+                          label: 'public binders',
+                          t: t,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           Padding(
@@ -226,11 +276,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         underline: const SizedBox(),
                         style: TextStyle(color: t.muted, fontSize: 12.5),
                         items: PriceCategory.values.map((c) {
-                          return DropdownMenuItem(value: c, child: Text(c.label));
+                          return DropdownMenuItem(
+                            value: c,
+                            child: Text(c.label),
+                          );
                         }).toList(),
                         onChanged: (val) {
                           if (val != null) {
-                            ref.read(priceCategoryProvider.notifier).select(val);
+                            context.read<PriceCategoryBloc>().add(SelectPriceCategory(val));
                           }
                         },
                       ),
@@ -238,7 +291,47 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   ),
                 ),
                 row('Offline price cache', 'cached today · on'),
-                row('Price alerts', 'signals + deal radar'),
+                profileAsync.maybeWhen(
+                  data: (profile) => Container(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    decoration: BoxDecoration(
+                      border: Border(bottom: BorderSide(color: t.line)),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Price alerts',
+                          style: TextStyle(color: t.ink, fontSize: 13.5),
+                        ),
+                        Switch(
+                          value: profile.priceAlertsEnabled,
+                          activeThumbColor: t.accent,
+                          onChanged: alertsSaving
+                              ? null
+                              : (val) async {
+                                  setState(() => alertsSaving = true);
+                                  final either = await context
+                                      .read<ProfileBloc>()
+                                      .updatePriceAlerts(val);
+                                  if (!mounted) return;
+                                  setState(() => alertsSaving = false);
+                                  either.match(
+                                    (failure) => ScaffoldMessenger.of(context)
+                                        .showSnackBar(
+                                          SnackBar(
+                                            content: Text(failure.error),
+                                          ),
+                                        ),
+                                    (_) {},
+                                  );
+                                },
+                        ),
+                      ],
+                    ),
+                  ),
+                  orElse: () => row('Price alerts', 'signals + deal radar'),
+                ),
                 row('Data', 'export CSV · coming soon'),
                 Builder(
                   builder: (_) {
@@ -267,7 +360,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   },
                 ),
                 GestureDetector(
-                  onTap: () => ref.read(authNotifierProvider.notifier).logout(),
+                  onTap: () => context.read<AuthBloc>().add(const AuthLogoutRequested()),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 11),
                     decoration: BoxDecoration(
@@ -290,6 +383,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 ),
               ],
             ),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              throw StateError("this is a test exception");
+            },
+            child: Text('sentry'),
           ),
           Padding(
             padding: const EdgeInsets.only(top: 20, bottom: 8),

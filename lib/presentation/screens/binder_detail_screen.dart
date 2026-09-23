@@ -1,41 +1,47 @@
 import 'package:flutter/material.dart' hide Card;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:provider/provider.dart';
+import '../../core/bloc/resource.dart';
 import '../../core/error/failure.dart';
+import '../../core/pricing/bloc/price_category_bloc.dart';
 import '../../core/pricing/price_category.dart';
 import '../../features/binders/domain/entities/binder.dart' as api;
-import '../../features/binders/presentation/providers/binder_providers.dart';
+import '../../features/binders/presentation/bloc/binder_bloc.dart';
+import '../../features/binders/presentation/bloc/binder_event.dart';
 import '../../nav.dart';
 import '../../theme.dart' as theme;
 import '../../widgets/ui.dart' as ui;
 
-class BinderDetailScreen extends ConsumerWidget {
+class BinderDetailScreen extends StatefulWidget {
   final String binderId;
   const BinderDetailScreen({super.key, required this.binderId});
 
-  Future<void> _togglePublic(
-    BuildContext context,
-    WidgetRef ref,
-    api.Binder b,
-  ) async {
-    final either = await ref.read(updateBinderUseCaseProvider)(
+  @override
+  State<BinderDetailScreen> createState() => _BinderDetailScreenState();
+}
+
+class _BinderDetailScreenState extends State<BinderDetailScreen> {
+  @override
+  void initState() {
+    super.initState();
+    context.read<BinderBloc>().add(LoadBinderDetail(widget.binderId));
+  }
+
+  Future<void> _togglePublic(BuildContext context, api.Binder b) async {
+    final either = await context.read<BinderBloc>().updateBinder(
       b.id,
       isPublic: !b.isPublic,
     );
+    if (!context.mounted) return;
     either.match(
       (failure) => ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(failure.error))),
-      (_) => ref.invalidate(binderDetailProvider(b.id)),
+      (_) {},
     );
   }
 
-  Future<void> _renameBinder(
-    BuildContext context,
-    WidgetRef ref,
-    theme.AppColors t,
-    api.Binder b,
-  ) async {
+  Future<void> _renameBinder(BuildContext context, theme.AppColors t, api.Binder b) async {
     final controller = TextEditingController(text: b.name);
     final newName = await showDialog<String>(
       context: context,
@@ -98,22 +104,20 @@ class BinderDetailScreen extends ConsumerWidget {
       ),
     );
     if (newName == null || newName.isEmpty || newName == b.name) return;
+    if (!context.mounted) return;
 
-    final either = await ref.read(updateBinderUseCaseProvider)(
-      b.id,
-      name: newName,
-    );
+    final either = await context.read<BinderBloc>().updateBinder(b.id, name: newName);
+    if (!context.mounted) return;
     either.match(
       (failure) => ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(failure.error))),
-      (_) => ref.invalidate(binderDetailProvider(b.id)),
+      (_) {},
     );
   }
 
   Future<void> _confirmRemove(
     BuildContext context,
-    WidgetRef ref,
     theme.AppColors t,
     String binderId,
     int position,
@@ -194,22 +198,20 @@ class BinderDetailScreen extends ConsumerWidget {
       ),
     );
     if (confirmed != true) return;
+    if (!context.mounted) return;
 
-    final either = await ref.read(removeCardFromPocketUseCaseProvider)(
-      binderId,
-      position,
-    );
+    final either = await context.read<BinderBloc>().removeCardFromPocket(binderId, position);
+    if (!context.mounted) return;
     either.match(
       (failure) => ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(failure.error))),
-      (_) => ref.invalidate(binderDetailProvider(binderId)),
+      (_) {},
     );
   }
 
   Widget _pocketTile(
     BuildContext context,
-    WidgetRef ref,
     theme.AppColors t,
     api.Binder b,
     api.Pocket p,
@@ -298,7 +300,7 @@ class BinderDetailScreen extends ConsumerWidget {
             top: -3,
             right: -3,
             child: GestureDetector(
-              onTap: () => _confirmRemove(context, ref, t, b.id, p.position),
+              onTap: () => _confirmRemove(context, t, b.id, p.position),
               child: Container(
                 width: 20,
                 height: 20,
@@ -320,15 +322,18 @@ class BinderDetailScreen extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final nav = context.read<Nav>();
     final t = theme.exchange;
-    final binderAsync = ref.watch(binderDetailProvider(binderId));
-    final priceCategory = ref.watch(priceCategoryProvider);
+    final binderAsync =
+        context.watch<BinderBloc>().state.binderDetails[widget.binderId] ??
+        const ResourceLoading();
+    final priceCategory = context.watch<PriceCategoryBloc>().state.category;
 
     return Container(
       color: t.bg,
       child: binderAsync.when(
+        initial: () => const Center(child: CircularProgressIndicator()),
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Padding(
           padding: const EdgeInsets.all(24),
@@ -371,7 +376,7 @@ class BinderDetailScreen extends ConsumerWidget {
                     ),
                   ),
                   GestureDetector(
-                    onTap: () => _togglePublic(context, ref, b),
+                    onTap: () => _togglePublic(context, b),
                     child: ui.Chip(
                       label: b.isPublic
                           ? 'PUBLIC · tap to unpublish'
@@ -384,7 +389,7 @@ class BinderDetailScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 12),
               GestureDetector(
-                onTap: () => _renameBinder(context, ref, t, b),
+                onTap: () => _renameBinder(context, t, b),
                 child: Text.rich(
                   TextSpan(
                     children: [
@@ -450,10 +455,7 @@ class BinderDetailScreen extends ConsumerWidget {
                   spacing: 8,
                   runSpacing: 8,
                   children: b.pockets
-                      .map(
-                        (p) =>
-                            _pocketTile(context, ref, t, b, p, priceCategory),
-                      )
+                      .map((p) => _pocketTile(context, t, b, p, priceCategory))
                       .toList(),
                 ),
               ),

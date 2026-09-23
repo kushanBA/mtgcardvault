@@ -40,8 +40,12 @@ dependencies:
   provider: ^6.1.2
   dio: ^5.11.0
   fpdart: ^1.2.0
-  flutter_riverpod: ^2.6.1
   path_provider: ^2.1.6
+  sentry_flutter: ^9.30.0
+  flutter_bloc: ^9.1.1
+  equatable: ^3.0.0
+  get_it: ^9.3.0
+  google_sign_in: ^7.2.0
 
 dev_dependencies:
   flutter_test:

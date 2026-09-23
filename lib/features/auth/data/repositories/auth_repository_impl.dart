@@ -4,16 +4,20 @@ import '../../domain/entities/user.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../datasources/auth_local_data_source.dart';
 import '../datasources/auth_remote_data_source.dart';
+import '../datasources/google_sign_in_data_source.dart';
 
 class AuthRepositoryImpl implements AuthRepository {
   final AuthRemoteDataSource _remote;
   final AuthLocalDataSource _local;
+  final GoogleSignInDataSource _googleSignIn;
 
   AuthRepositoryImpl({
     required AuthRemoteDataSource remote,
     required AuthLocalDataSource local,
+    required GoogleSignInDataSource googleSignIn,
   }) : _remote = remote,
-       _local = local;
+       _local = local,
+       _googleSignIn = googleSignIn;
 
   @override
   Future<Either<Failure, User>> login(String email, String password) async {
@@ -34,6 +38,18 @@ class AuthRepositoryImpl implements AuthRepository {
   ) async {
     try {
       final user = await _remote.register(email, password, name);
+      await _local.cacheUser(user);
+      return Right(user);
+    } on Failure catch (e) {
+      return Left(e);
+    }
+  }
+
+  @override
+  Future<Either<Failure, User>> loginWithGoogle() async {
+    try {
+      final idToken = await _googleSignIn.signIn();
+      final user = await _remote.loginWithGoogle(idToken);
       await _local.cacheUser(user);
       return Right(user);
     } on Failure catch (e) {

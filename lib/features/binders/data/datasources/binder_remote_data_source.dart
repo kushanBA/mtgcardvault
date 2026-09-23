@@ -56,7 +56,6 @@ class BinderRemoteDataSourceImpl implements BinderRemoteDataSource {
       final data = (response.data as List)
           .map((b) => BinderModel.fromJson(b as Map<String, dynamic>))
           .toList();
-      log(data[0].id);
       return data;
     } on DioException catch (e) {
       throw _failureFrom(e);

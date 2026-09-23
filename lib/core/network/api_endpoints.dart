@@ -6,10 +6,19 @@ class ApiEndpoints {
   static const String logout = "$baseUrl/auth/logout";
   static const String scan = "$baseUrl/scans";
   static const String refreshToken = "$baseUrl/auth/refresh";
+  static const String googleLogin = "$baseUrl/auth/google";
+
+  static const String collection = "$baseUrl/collection";
+
+  static const String signals = "$baseUrl/me/signals";
+  static const String profile = "$baseUrl/me/profile";
+
+  static const String listings = "$baseUrl/listings";
 
   static const String binders = "$baseUrl/binders";
   static const String publicBinders = "$baseUrl/binders/public";
   static String binder(String id) => "$baseUrl/binders/$id";
   static String binderPockets(String id) => "$baseUrl/binders/$id/pockets";
-  static String binderPocket(String id, int position) => "$baseUrl/binders/$id/pockets/$position";
+  static String binderPocket(String id, int position) =>
+      "$baseUrl/binders/$id/pockets/$position";
 }

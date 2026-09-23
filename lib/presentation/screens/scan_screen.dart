@@ -3,26 +3,30 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart' hide Card;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:provider/provider.dart';
-import '../../features/binders/domain/entities/binder.dart' as binders;
-import '../../features/binders/presentation/providers/binder_providers.dart';
+import '../../core/bloc/resource.dart';
+import '../../core/di/injector.dart';
+import '../../core/pricing/bloc/price_category_bloc.dart';
 import '../../core/pricing/price_category.dart';
+import '../../features/binders/domain/entities/binder.dart' as binders;
+import '../../features/binders/presentation/bloc/binder_bloc.dart';
+import '../../features/binders/presentation/bloc/binder_event.dart';
+import '../../features/collection/presentation/bloc/collection_bloc.dart';
 import '../../features/scan/domain/entities/card.dart';
-import '../../features/scan/presentation/providers/scan_providers.dart';
+import '../../features/scan/domain/usecases/scan_card.dart';
 import '../../nav.dart';
 import '../../theme.dart' as theme;
 import '../../widgets/ui.dart' as ui;
 
-class ScanScreen extends ConsumerStatefulWidget {
+class ScanScreen extends StatefulWidget {
   /// When set, a successful scan adds straight to this binder instead of
   /// showing the "pick a binder" flow.
   final String? targetBinderId;
   const ScanScreen({super.key, this.targetBinderId});
 
   @override
-  ConsumerState<ScanScreen> createState() => _ScanScreenState();
+  State<ScanScreen> createState() => _ScanScreenState();
 }
 
 enum _BurstStatus { loading, success, error }
@@ -32,28 +36,40 @@ class _BurstItem {
   final _BurstStatus status;
   final CardScanResult? result;
   final String? error;
+  final bool addedToBinder;
+  final bool addedToCollection;
 
   _BurstItem({
     required this.image,
     this.status = _BurstStatus.loading,
     this.result,
     this.error,
+    this.addedToBinder = false,
+    this.addedToCollection = false,
   });
 
   _BurstItem copyWith({
     _BurstStatus? status,
     CardScanResult? result,
     String? error,
+    bool? addedToBinder,
+    bool? addedToCollection,
   }) => _BurstItem(
     image: image,
     status: status ?? this.status,
     result: result ?? this.result,
     error: error ?? this.error,
+    addedToBinder: addedToBinder ?? this.addedToBinder,
+    addedToCollection: addedToCollection ?? this.addedToCollection,
   );
 }
 
-class _ScanScreenState extends ConsumerState<ScanScreen> {
+class _ScanScreenState extends State<ScanScreen> {
+  static const int _burstMaxCards = 20;
+
   CardScanResult? result;
+  bool _resultAddedToBinder = false;
+  bool _resultAddedToCollection = false;
   String? error;
   bool scanning = false;
   CameraController? controller;
@@ -69,6 +85,13 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   void initState() {
     super.initState();
     _initCamera();
+    final targetBinderId = widget.targetBinderId;
+    if (targetBinderId != null) {
+      final binderBloc = context.read<BinderBloc>();
+      if (binderBloc.state.binderDetails[targetBinderId] == null) {
+        binderBloc.add(LoadBinderDetail(targetBinderId));
+      }
+    }
   }
 
   Future<void> _initCamera() async {
@@ -104,6 +127,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     setState(() {
       scanning = true;
       result = null;
+      _resultAddedToBinder = false;
+      _resultAddedToCollection = false;
       error = null;
     });
     try {
@@ -118,7 +143,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       final File file = File('${location.path}/images.jpeg');
       await photo.saveTo(file.path);
       print(file.path);
-      final scanCard = ref.read(scanCardUseCaseProvider);
+      final scanCard = sl<ScanCard>();
 
       final either = await scanCard(File(photo.path));
       if (_disposed) return;
@@ -154,6 +179,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   Future<void> _captureBurst() async {
     if (controller == null || !cameraReady) return;
+    if (_burstImages.length >= _burstMaxCards) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Burst mode is limited to $_burstMaxCards cards')),
+      );
+      return;
+    }
     try {
       final photo = await controller!.takePicture();
       if (_disposed) return;
@@ -175,7 +206,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _burstProcessing = true;
       _burstResults = images.map((f) => _BurstItem(image: f)).toList();
     });
-    final scanCard = ref.read(scanCardUseCaseProvider);
+    final scanCard = sl<ScanCard>();
     for (var i = 0; i < images.length; i++) {
       final either = await scanCard(images[i]);
       if (_disposed) return;
@@ -207,20 +238,28 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     });
   }
 
-  Future<void> _addToBinder(String catalogCardId) async {
+  /// Lets the person pick a binder and adds the card to it. Since slotting a
+  /// card into a binder means you own it, this also adds it to the
+  /// collection — unless [alreadyInCollection] says that's already been done
+  /// for this scan, which avoids double-counting the quantity if both
+  /// buttons get tapped for the same card.
+  Future<({bool binder, bool collection})> _addToBinder(
+    String catalogCardId, {
+    required bool alreadyInCollection,
+  }) async {
     final t = theme.cameraTheme;
     List<binders.Binder> mtgBinders;
     try {
-      final all = await ref.read(myBindersProvider.future);
+      final all = await context.read<BinderBloc>().myBindersOrLoad();
       mtgBinders = all.where((b) => b.game == binders.Game.mtg).toList();
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return (binder: false, collection: false);
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Could not load binders: $e')));
-      return;
+      return (binder: false, collection: false);
     }
-    if (!mounted) return;
+    if (!mounted) return (binder: false, collection: false);
 
     final selectedBinderId = await showDialog<String>(
       context: context,
@@ -285,42 +324,145 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       ),
     );
 
-    if (selectedBinderId == null) return;
-    final either = await ref.read(addCardToBinderUseCaseProvider)(
+    if (selectedBinderId == null) return (binder: false, collection: false);
+    final either = await context.read<BinderBloc>().addCardToBinder(
       selectedBinderId,
       catalogCardId,
     );
-    if (!mounted) return;
-    either.match(
-      (failure) => ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(failure.error))),
-      (_) {
-        ref.invalidate(myBindersProvider);
-        ref.invalidate(binderDetailProvider(selectedBinderId));
+    if (!mounted) return (binder: false, collection: false);
+    final bindAdded = either.match(
+      (failure) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Added to binder ✓')));
+        ).showSnackBar(SnackBar(content: Text(failure.error)));
+        return false;
       },
+      (_) => true,
     );
+    if (!bindAdded) return (binder: false, collection: false);
+
+    var addedToCollection = alreadyInCollection;
+    if (!alreadyInCollection) {
+      addedToCollection = await _addToCollection(catalogCardId, silent: true);
+    }
+    if (!mounted) return (binder: true, collection: addedToCollection);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          !alreadyInCollection && addedToCollection
+              ? 'Added to binder ✓ · also added to your collection'
+              : 'Added to binder ✓',
+        ),
+      ),
+    );
+    return (binder: true, collection: addedToCollection);
   }
 
-  Future<void> _addToTargetBinder(String binderId, String catalogCardId) async {
-    final either = await ref.read(addCardToBinderUseCaseProvider)(
+  /// Adds the card straight to [binderId] (the "scan into this binder"
+  /// overlay flow) and — same reasoning as [_addToBinder] — also adds it to
+  /// the collection unless [alreadyInCollection] is already true.
+  Future<void> _addToTargetBinder(
+    String binderId,
+    String catalogCardId, {
+    required bool alreadyInCollection,
+  }) async {
+    final either = await context.read<BinderBloc>().addCardToBinder(
       binderId,
       catalogCardId,
     );
     if (!mounted) return;
-    either.match(
-      (failure) => ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(failure.error))),
+    final added = either.match(
+      (failure) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failure.error)));
+        return false;
+      },
+      (_) => true,
+    );
+    if (!added) return;
+    if (!alreadyInCollection) {
+      await _addToCollection(catalogCardId, silent: true);
+    }
+    if (!mounted) return;
+    context.read<Nav>().pop();
+  }
+
+  Future<bool> _addToCollection(String catalogCardId, {bool silent = false}) async {
+    final either = await context.read<CollectionBloc>().addToCollection(catalogCardId);
+    if (!mounted) return false;
+    return either.match(
+      (failure) {
+        if (!silent) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(failure.error)));
+        }
+        return false;
+      },
       (_) {
-        ref.invalidate(myBindersProvider);
-        ref.invalidate(binderDetailProvider(binderId));
-        context.read<Nav>().pop();
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Added to collection ✓')),
+          );
+        }
+        return true;
       },
     );
+  }
+
+  /// Burst tiles add straight to [widget.targetBinderId] when set, same as
+  /// the single-scan flow — but without popping the nav stack afterward,
+  /// since the burst results list stays open for the rest of the tiles.
+  /// Also adds to the collection (unless already done for this tile), same
+  /// reasoning as [_addToBinder].
+  Future<void> _burstAddToBinder(int index, String catalogCardId) async {
+    final alreadyInCollection = _burstResults[index].addedToCollection;
+    bool added;
+    var addedToCollection = alreadyInCollection;
+    if (widget.targetBinderId != null) {
+      final either = await context.read<BinderBloc>().addCardToBinder(
+        widget.targetBinderId!,
+        catalogCardId,
+      );
+      if (!mounted) return;
+      added = either.match(
+        (failure) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(failure.error)));
+          return false;
+        },
+        (_) => true,
+      );
+      if (added && !alreadyInCollection) {
+        addedToCollection = await _addToCollection(catalogCardId, silent: true);
+      }
+    } else {
+      final result = await _addToBinder(
+        catalogCardId,
+        alreadyInCollection: alreadyInCollection,
+      );
+      added = result.binder;
+      addedToCollection = result.collection;
+    }
+    if (!added || !mounted) return;
+    setState(() {
+      _burstResults[index] = _burstResults[index].copyWith(
+        addedToBinder: true,
+        addedToCollection: addedToCollection,
+      );
+    });
+  }
+
+  Future<void> _burstAddToCollection(int index, String catalogCardId) async {
+    final added = await _addToCollection(catalogCardId);
+    if (!added || !mounted) return;
+    setState(() {
+      _burstResults[index] = _burstResults[index].copyWith(
+        addedToCollection: true,
+      );
+    });
   }
 
   @override
@@ -334,7 +476,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   Widget build(BuildContext context) {
     final nav = context.read<Nav>();
     final t = theme.cameraTheme;
-    final priceCategory = ref.watch(priceCategoryProvider);
+    final priceCategory = context.watch<PriceCategoryBloc>().state.category;
 
     return Container(
       color: t.bg,
@@ -432,8 +574,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                 if (widget.targetBinderId != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
-                    child: ref
-                        .watch(binderDetailProvider(widget.targetBinderId!))
+                    child: (context.watch<BinderBloc>().state.binderDetails[widget.targetBinderId!] ??
+                            const ResourceInitial())
                         .maybeWhen(
                           data: (b) => Text(
                             'Adding to "${b.name}"',
@@ -563,7 +705,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                   ? Center(
                       child: Text(
                         _burstImages.isEmpty
-                            ? 'Burst mode — capture cards one by one, then finish'
+                            ? 'Burst mode — capture up to $_burstMaxCards cards, then finish'
+                            : _burstImages.length >= _burstMaxCards
+                            ? '$_burstMaxCards photos captured — limit reached, tap Finish'
                             : '${_burstImages.length} photo${_burstImages.length == 1 ? '' : 's'} captured',
                         style: TextStyle(color: t.muted, fontSize: 12.5),
                       ),
@@ -635,32 +779,106 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                         ),
                         if (result!.card.catalogCardId != null) ...[
                           const SizedBox(height: 8),
-                          GestureDetector(
-                            onTap: widget.targetBinderId != null
-                                ? () => _addToTargetBinder(
-                                    widget.targetBinderId!,
-                                    result!.card.catalogCardId!,
-                                  )
-                                : () =>
-                                      _addToBinder(result!.card.catalogCardId!),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: t.gold,
-                                borderRadius: BorderRadius.circular(8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _resultAddedToBinder
+                                    ? _burstAddedBadge(t, 'Added to binder ✓')
+                                    : GestureDetector(
+                                        onTap: () async {
+                                          final catalogCardId =
+                                              result!.card.catalogCardId!;
+                                          if (widget.targetBinderId != null) {
+                                            await _addToTargetBinder(
+                                              widget.targetBinderId!,
+                                              catalogCardId,
+                                              alreadyInCollection:
+                                                  _resultAddedToCollection,
+                                            );
+                                            return;
+                                          }
+                                          final r = await _addToBinder(
+                                            catalogCardId,
+                                            alreadyInCollection:
+                                                _resultAddedToCollection,
+                                          );
+                                          if (!mounted) return;
+                                          setState(() {
+                                            if (r.binder) {
+                                              _resultAddedToBinder = true;
+                                            }
+                                            if (r.collection) {
+                                              _resultAddedToCollection = true;
+                                            }
+                                          });
+                                        },
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 8,
+                                          ),
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: t.gold,
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            widget.targetBinderId != null
+                                                ? '+ Add to this binder'
+                                                : '+ Add to binder',
+                                            style: const TextStyle(
+                                              color: Color(0xFF131316),
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
                               ),
-                              child: Text(
-                                widget.targetBinderId != null
-                                    ? '+ Add to this binder'
-                                    : '+ Add to binder',
-                                style: const TextStyle(
-                                  color: Color(0xFF131316),
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w700,
-                                ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _resultAddedToCollection
+                                    ? _burstAddedBadge(
+                                        t,
+                                        'Added to collection ✓',
+                                      )
+                                    : GestureDetector(
+                                        onTap: () async {
+                                          final added = await _addToCollection(
+                                            result!.card.catalogCardId!,
+                                          );
+                                          if (!added || !mounted) return;
+                                          setState(
+                                            () =>
+                                                _resultAddedToCollection = true,
+                                          );
+                                        },
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 8,
+                                          ),
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            border: Border.all(
+                                              color: const Color(0xFF3A3F47),
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '+ Add to collection',
+                                            style: TextStyle(
+                                              color: t.ink,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
                               ),
-                            ),
+                            ],
                           ),
                         ],
                       ],
@@ -706,7 +924,10 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                 children: [
                   Expanded(
                     child: GestureDetector(
-                      onTap: cameraReady ? _captureBurst : null,
+                      onTap:
+                          cameraReady && _burstImages.length < _burstMaxCards
+                          ? _captureBurst
+                          : null,
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 13),
                         alignment: Alignment.center,
@@ -716,9 +937,13 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                           border: Border.all(color: const Color(0xFF3A3F47)),
                         ),
                         child: Text(
-                          'Capture',
+                          _burstImages.length >= _burstMaxCards
+                              ? 'Limit reached'
+                              : 'Capture',
                           style: TextStyle(
-                            color: t.ink,
+                            color: _burstImages.length >= _burstMaxCards
+                                ? t.muted
+                                : t.ink,
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
                           ),
@@ -804,16 +1029,34 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
             itemCount: _burstResults.length,
             separatorBuilder: (_, __) => const SizedBox(height: 8),
             itemBuilder: (context, index) =>
-                _burstTile(t, priceCategory, _burstResults[index]),
+                _burstTile(t, priceCategory, index, _burstResults[index]),
           ),
         ),
       ],
     );
   }
 
+  Widget _burstAddedBadge(theme.CameraColors t, String label) => Container(
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    alignment: Alignment.center,
+    decoration: BoxDecoration(
+      color: const Color(0xFF23262C),
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(
+        color: t.muted,
+        fontSize: 12.5,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+
   Widget _burstTile(
     theme.CameraColors t,
     PriceCategory priceCategory,
+    int index,
     _BurstItem item,
   ) {
     final result = item.result;
@@ -913,31 +1156,66 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           if (item.status == _BurstStatus.success &&
               result!.card.catalogCardId != null) ...[
             const SizedBox(height: 8),
-            GestureDetector(
-              onTap: widget.targetBinderId != null
-                  ? () => _addToTargetBinder(
-                      widget.targetBinderId!,
-                      result.card.catalogCardId!,
-                    )
-                  : () => _addToBinder(result.card.catalogCardId!),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: t.gold,
-                  borderRadius: BorderRadius.circular(8),
+            Row(
+              children: [
+                Expanded(
+                  child: item.addedToBinder
+                      ? _burstAddedBadge(t, 'Added to binder ✓')
+                      : GestureDetector(
+                          onTap: () => _burstAddToBinder(
+                            index,
+                            result.card.catalogCardId!,
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: t.gold,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              widget.targetBinderId != null
+                                  ? '+ Add to this binder'
+                                  : '+ Add to binder',
+                              style: const TextStyle(
+                                color: Color(0xFF131316),
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
                 ),
-                child: Text(
-                  widget.targetBinderId != null
-                      ? '+ Add to this binder'
-                      : '+ Add to binder',
-                  style: const TextStyle(
-                    color: Color(0xFF131316),
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                  ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: item.addedToCollection
+                      ? _burstAddedBadge(t, 'Added to collection ✓')
+                      : GestureDetector(
+                          onTap: () => _burstAddToCollection(
+                            index,
+                            result.card.catalogCardId!,
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: const Color(0xFF3A3F47),
+                              ),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '+ Add to collection',
+                              style: TextStyle(
+                                color: t.ink,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
                 ),
-              ),
+              ],
             ),
           ],
         ],

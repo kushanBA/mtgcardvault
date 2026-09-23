@@ -1,28 +1,129 @@
 import 'package:flutter/material.dart' hide Card;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:provider/provider.dart';
+import '../../core/bloc/resource.dart';
 import '../../core/error/failure.dart';
+import '../../core/pricing/bloc/price_category_bloc.dart';
+import '../../core/pricing/price_category.dart';
 import '../../data/mock_db.dart';
 import '../../data/store.dart';
 import '../../data/types.dart';
 import '../../features/binders/domain/entities/binder.dart' as api;
-import '../../features/binders/presentation/providers/binder_providers.dart';
+import '../../features/binders/presentation/bloc/binder_bloc.dart';
+import '../../features/binders/presentation/bloc/binder_event.dart';
+import '../../features/collection/domain/entities/collection_item.dart';
+import '../../features/collection/presentation/bloc/collection_bloc.dart';
+import '../../features/collection/presentation/bloc/collection_event.dart';
 import '../../nav.dart';
 import '../../theme.dart' as theme;
 import '../../widgets/ui.dart' as ui;
 
-const _frames = ['1D', '1W', '1M', '1Y', 'ALL'];
+class _GameSlice {
+  final String game;
+  final double value;
 
-class BindersScreen extends ConsumerStatefulWidget {
+  /// null when day-open pricing isn't available yet — see MOBILE_API.md:
+  /// `dayOpenPrice` is currently null for every catalog card.
+  final double? changeFrac;
+  _GameSlice({required this.game, required this.value, this.changeFrac});
+}
+
+class _PortfolioStats {
+  final double value;
+  final double? changeFrac;
+  final int totalCards;
+  final List<_GameSlice> byGame;
+  _PortfolioStats({
+    required this.value,
+    required this.changeFrac,
+    required this.totalCards,
+    required this.byGame,
+  });
+}
+
+_PortfolioStats _computePortfolioStats(
+  List<CollectionItem> items,
+  PriceCategory priceCategory,
+) {
+  double value = 0;
+
+  /// Totals on the flat `price`/`dayOpenPrice` basis — `dayOpenPrice` isn't
+  /// broken out per market, so % change has to be computed against the same
+  /// flat price `dayOpenPrice` was benchmarked against, not the price-type
+  /// the person picked in Profile (which is only for the displayed $ amounts).
+  double baseValue = 0;
+  double openTotal = 0;
+  var allHaveOpen = items.isNotEmpty;
+  var totalCards = 0;
+  final byGameValue = <String, double>{};
+  final byGameBase = <String, double>{};
+  final byGameOpen = <String, double>{};
+  final byGameAllOpen = <String, bool>{};
+
+  for (final item in items) {
+    final price = item.catalogCard.priceFor(priceCategory) ?? 0;
+    final basePrice = item.catalogCard.price ?? 0;
+    final lineValue = price * item.quantity;
+    value += lineValue;
+    baseValue += basePrice * item.quantity;
+    totalCards += item.quantity;
+
+    final label = api.GameApiValue.fromApiValue(item.catalogCard.game).label;
+    byGameValue[label] = (byGameValue[label] ?? 0) + lineValue;
+    byGameBase[label] = (byGameBase[label] ?? 0) + basePrice * item.quantity;
+    byGameAllOpen.putIfAbsent(label, () => true);
+
+    final open = item.catalogCard.dayOpenPrice;
+    if (open == null) {
+      allHaveOpen = false;
+      byGameAllOpen[label] = false;
+    } else {
+      openTotal += open * item.quantity;
+      byGameOpen[label] = (byGameOpen[label] ?? 0) + open * item.quantity;
+    }
+  }
+
+  final byGame = byGameValue.entries.map((e) {
+    final open = byGameOpen[e.key];
+    final base = byGameBase[e.key];
+    final hasChange =
+        byGameAllOpen[e.key] == true &&
+        open != null &&
+        open > 0 &&
+        base != null;
+    return _GameSlice(
+      game: e.key,
+      value: e.value,
+      changeFrac: hasChange ? base / open - 1 : null,
+    );
+  }).toList()..sort((a, b) => b.value.compareTo(a.value));
+
+  return _PortfolioStats(
+    value: value,
+    changeFrac: allHaveOpen && openTotal > 0 ? baseValue / openTotal - 1 : null,
+    totalCards: totalCards,
+    byGame: byGame,
+  );
+}
+
+class BindersScreen extends StatefulWidget {
   const BindersScreen({super.key});
 
   @override
-  ConsumerState<BindersScreen> createState() => _BindersScreenState();
+  State<BindersScreen> createState() => _BindersScreenState();
 }
 
-class _BindersScreenState extends ConsumerState<BindersScreen> {
-  String frame = '1D';
+class _BindersScreenState extends State<BindersScreen> {
   String segment = 'binders';
+
+  @override
+  void initState() {
+    super.initState();
+    final bloc = context.read<CollectionBloc>();
+    if (bloc.state.myCollection is ResourceInitial) {
+      bloc.add(const LoadMyCollection());
+    }
+  }
 
   void _openNewBinder() {
     final t = theme.exchange;
@@ -118,16 +219,13 @@ class _BindersScreenState extends ConsumerState<BindersScreen> {
                       setDialogState(() => error = 'Give it a name');
                       return;
                     }
-                    final either = await ref.read(createBinderUseCaseProvider)(
+                    final either = await context.read<BinderBloc>().createBinder(
                       name,
                       selected,
                     );
                     either.match(
                       (failure) => setDialogState(() => error = failure.error),
-                      (_) {
-                        ref.invalidate(myBindersProvider);
-                        Navigator.of(ctx).pop();
-                      },
+                      (_) => Navigator.of(ctx).pop(),
                     );
                   },
                   child: Container(
@@ -159,167 +257,148 @@ class _BindersScreenState extends ConsumerState<BindersScreen> {
   Widget build(BuildContext context) {
     final store = context.watch<Store>();
     final t = theme.exchange;
-    final value = store.portfolioValue();
-    final change = store.portfolioDayChange();
-    final up = change >= 0;
-    final series = store.portfolioSeries.length > 1
-        ? store.portfolioSeries
-        : [value * 0.98, value];
-    final totalCards = store.collection.values.fold(0, (a, b) => a + b);
-    final byGame = store.portfolioByGame();
+    final collectionAsync = context.watch<CollectionBloc>().state.myCollection;
+    final priceCategory = context.watch<PriceCategoryBloc>().state.category;
 
     return Container(
       color: t.bg,
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Binders',
-                style: theme.fontDisplay(fontSize: 20, color: t.ink),
-              ),
-              Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(
-                      text: '● ',
-                      style: TextStyle(color: t.up),
-                    ),
-                    TextSpan(
-                      text: 'live · demo ticker',
-                      style: TextStyle(color: t.muted, fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+          Text('Binders', style: theme.fontDisplay(fontSize: 20, color: t.ink)),
           const SizedBox(height: 4),
-          Text(
-            'Total collection value · $totalCards cards',
-            style: TextStyle(color: t.muted, fontSize: 12),
-          ),
-          Text(
-            '\$${fmt(value)}',
-            style: theme.fontHeavy(fontSize: 34, color: t.ink),
-          ),
-          Text(
-            '${up ? '▲' : '▼'} ${pct(change)} today',
-            style: TextStyle(
-              color: up ? t.up : t.down,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
+          collectionAsync.when(
+            initial: () => const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator()),
             ),
-          ),
-          const SizedBox(height: 10),
-          ui.Sparkline(
-            data: series,
-            color: up ? t.up : t.down,
-            width: 320,
-            height: 56,
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: _frames.map((fr) {
-              return Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: GestureDetector(
-                  onTap: () => setState(() => frame = fr),
-                  child: ui.Chip(
-                    label: fr,
-                    bg: frame == fr ? t.panel : null,
-                    color: frame == fr ? theme.gold : t.muted,
+            loading: () => const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (e, _) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Text(
+                e is Failure ? e.error : e.toString(),
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12.5),
+              ),
+            ),
+            data: (items) {
+              final stats = _computePortfolioStats(items, priceCategory);
+              final up = (stats.changeFrac ?? 0) >= 0;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Total collection value · ${stats.totalCards} cards',
+                    style: TextStyle(color: t.muted, fontSize: 12),
                   ),
-                ),
-              );
-            }).toList(),
-          ),
-          if (byGame.length > 1) ...[
-            const SizedBox(height: 14),
-            Row(
-              children: byGame
-                  .map(
-                    (g) => Expanded(
-                      flex: (g.value * 100).round().clamp(1, 1000000),
-                      child: Container(
-                        height: 6,
-                        color: Color(
-                          gameColors[g.game] ?? theme.gold.toARGB32(),
-                        ),
-                      ),
+                  Text(
+                    '\$${fmt(stats.value)}',
+                    style: theme.fontHeavy(fontSize: 34, color: t.ink),
+                  ),
+                  Text(
+                    stats.changeFrac == null
+                        ? 'day change pending pricing data'
+                        : '${up ? '▲' : '▼'} ${pct(stats.changeFrac!)} today',
+                    style: TextStyle(
+                      color: stats.changeFrac == null
+                          ? t.muted
+                          : (up ? t.up : t.down),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
                     ),
-                  )
-                  .toList(),
-            ),
-            const SizedBox(height: 6),
-            ...byGame.map(
-              (g) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: BoxDecoration(
-                        color: Color(
-                          gameColors[g.game] ?? theme.gold.toARGB32(),
-                        ),
-                        shape: BoxShape.circle,
-                      ),
+                  ),
+                  if (stats.byGame.length > 1) ...[
+                    const SizedBox(height: 14),
+                    Row(
+                      children: stats.byGame
+                          .map(
+                            (g) => Expanded(
+                              flex: (g.value * 100).round().clamp(1, 1000000),
+                              child: Container(
+                                height: 6,
+                                color: Color(
+                                  gameColors[g.game] ?? theme.gold.toARGB32(),
+                                ),
+                              ),
+                            ),
+                          )
+                          .toList(),
                     ),
-                    Expanded(
-                      child: Text.rich(
-                        TextSpan(
+                    const SizedBox(height: 6),
+                    ...stats.byGame.map(
+                      (g) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
                           children: [
-                            TextSpan(
-                              text: gameShort[g.game] ?? g.game,
+                            Container(
+                              width: 8,
+                              height: 8,
+                              margin: const EdgeInsets.only(right: 8),
+                              decoration: BoxDecoration(
+                                color: Color(
+                                  gameColors[g.game] ?? theme.gold.toARGB32(),
+                                ),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            Expanded(
+                              child: Text.rich(
+                                TextSpan(
+                                  children: [
+                                    TextSpan(
+                                      text: gameShort[g.game] ?? g.game,
+                                      style: TextStyle(
+                                        color: t.ink,
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    TextSpan(
+                                      text: stats.value > 0
+                                          ? '  ${((g.value / stats.value) * 100).round()}%'
+                                          : '',
+                                      style: TextStyle(
+                                        color: t.muted,
+                                        fontWeight: FontWeight.w400,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            Text(
+                              '\$${fmt(g.value)}',
                               style: TextStyle(
                                 color: t.ink,
                                 fontSize: 12.5,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
-                            TextSpan(
-                              text: '  ${((g.value / value) * 100).round()}%',
-                              style: TextStyle(
-                                color: t.muted,
-                                fontWeight: FontWeight.w400,
+                            SizedBox(
+                              width: 64,
+                              child: Text(
+                                g.changeFrac == null ? '—' : pct(g.changeFrac!),
+                                textAlign: TextAlign.right,
+                                style: TextStyle(
+                                  color: g.changeFrac == null
+                                      ? t.muted
+                                      : (g.changeFrac! >= 0 ? t.up : t.down),
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                           ],
                         ),
                       ),
                     ),
-                    Text(
-                      '\$${fmt(g.value)}',
-                      style: TextStyle(
-                        color: t.ink,
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    SizedBox(
-                      width: 64,
-                      child: Text(
-                        pct(g.change),
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                          color: g.change >= 0 ? t.up : t.down,
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
                   ],
-                ),
-              ),
-            ),
-          ],
+                ],
+              );
+            },
+          ),
           const SizedBox(height: 14),
           Container(
             padding: const EdgeInsets.all(3),
@@ -375,19 +454,37 @@ class _BindersScreenState extends ConsumerState<BindersScreen> {
   }
 }
 
-class _BinderList extends ConsumerWidget {
+class _BinderList extends StatefulWidget {
   final VoidCallback onNew;
   const _BinderList({required this.onNew});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  State<_BinderList> createState() => _BinderListState();
+}
+
+class _BinderListState extends State<_BinderList> {
+  @override
+  void initState() {
+    super.initState();
+    final bloc = context.read<BinderBloc>();
+    if (bloc.state.myBinders is ResourceInitial) {
+      bloc.add(const LoadMyBinders());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final nav = context.read<Nav>();
     final t = theme.exchange;
-    final bindersAsync = ref.watch(myBindersProvider);
+    final bindersAsync = context.watch<BinderBloc>().state.myBinders;
 
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: bindersAsync.when(
+        initial: () => const Padding(
+          padding: EdgeInsets.symmetric(vertical: 24),
+          child: Center(child: CircularProgressIndicator()),
+        ),
         loading: () => const Padding(
           padding: EdgeInsets.symmetric(vertical: 24),
           child: Center(child: CircularProgressIndicator()),
@@ -404,6 +501,14 @@ class _BinderList extends ConsumerWidget {
         ),
         data: (binders) => Column(
           children: [
+            if (binders.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: ui.EmptyState(
+                  image: 'assets/illustrations/empty-binder.png',
+                  text: 'No binders yet — create one to start organizing your cards.',
+                ),
+              ),
             ...binders.map((b) {
               return GestureDetector(
                 onTap: () => nav.push(NavOverlay.binder(b.id)),
@@ -457,7 +562,7 @@ class _BinderList extends ConsumerWidget {
               );
             }),
             GestureDetector(
-              onTap: onNew,
+              onTap: widget.onNew,
               child: Container(
                 margin: const EdgeInsets.only(top: 14),
                 padding: const EdgeInsets.symmetric(vertical: 12),
@@ -483,18 +588,36 @@ class _BinderList extends ConsumerWidget {
   }
 }
 
-class _PublicBinders extends ConsumerWidget {
+class _PublicBinders extends StatefulWidget {
   const _PublicBinders();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  State<_PublicBinders> createState() => _PublicBindersState();
+}
+
+class _PublicBindersState extends State<_PublicBinders> {
+  @override
+  void initState() {
+    super.initState();
+    final bloc = context.read<BinderBloc>();
+    if (bloc.state.publicBinders is ResourceInitial) {
+      bloc.add(const LoadPublicBinders());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final nav = context.read<Nav>();
     final t = theme.exchange;
-    final pageAsync = ref.watch(publicBindersProvider);
+    final pageAsync = context.watch<BinderBloc>().state.publicBinders;
 
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: pageAsync.when(
+        initial: () => const Padding(
+          padding: EdgeInsets.symmetric(vertical: 24),
+          child: Center(child: CircularProgressIndicator()),
+        ),
         loading: () => const Padding(
           padding: EdgeInsets.symmetric(vertical: 24),
           child: Center(child: CircularProgressIndicator()),
@@ -577,18 +700,28 @@ class _SingleCards extends StatefulWidget {
 class _SingleCardsState extends State<_SingleCards> {
   String game = 'All';
 
-  void _openAssign(String cardId) {
-    final store = context.read<Store>();
+  @override
+  void initState() {
+    super.initState();
+    context.read<BinderBloc>().add(const LoadCardBinderNames());
+  }
+
+  Future<void> _openAssign(String catalogCardId, api.Game cardGame) async {
     final t = theme.exchange;
-    final assignCard = store.cards[cardId]!;
-    final compatible = store.binders
-        .where(
-          (b) =>
-              b.game == assignCard.game &&
-              b.pockets.any((p) => p.cardId == null),
-        )
-        .toList();
-    showDialog(
+    List<api.Binder> compatible;
+    try {
+      final all = await context.read<BinderBloc>().myBindersOrLoad();
+      compatible = all.where((b) => b.game == cardGame).toList();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not load binders: $e')));
+      return;
+    }
+    if (!mounted) return;
+
+    final selectedBinderId = await showDialog<String>(
       context: context,
       barrierColor: const Color(0x8C000000),
       builder: (ctx) => Dialog(
@@ -605,7 +738,7 @@ class _SingleCardsState extends State<_SingleCards> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Add ${assignCard.name} to a binder',
+                'Add to a binder',
                 style: TextStyle(
                   color: t.ink,
                   fontWeight: FontWeight.w700,
@@ -614,7 +747,7 @@ class _SingleCardsState extends State<_SingleCards> {
               ),
               const SizedBox(height: 2),
               Text(
-                '${assignCard.game} binders only',
+                '${cardGame.label} binders only',
                 style: TextStyle(color: t.muted, fontSize: 11.5),
               ),
               const SizedBox(height: 8),
@@ -622,38 +755,25 @@ class _SingleCardsState extends State<_SingleCards> {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 10),
                   child: Text(
-                    'No ${assignCard.game} binder with free pockets — create one from the Binders tab first.',
+                    'No ${cardGame.label} binder yet — create one from the Binders tab first.',
                     style: TextStyle(color: t.muted, fontSize: 12.5),
                   ),
                 ),
               ...compatible.map((b) {
-                final free = b.pockets.where((p) => p.cardId == null).length;
                 return InkWell(
-                  onTap: () {
-                    store.addToBinder(b.id, cardId);
-                    Navigator.of(ctx).pop();
-                  },
+                  onTap: () => Navigator.of(ctx).pop(b.id),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     decoration: BoxDecoration(
                       border: Border(top: BorderSide(color: t.line)),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          b.name,
-                          style: TextStyle(
-                            color: t.ink,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        Text(
-                          '$free pockets free',
-                          style: TextStyle(color: t.muted, fontSize: 12),
-                        ),
-                      ],
+                    child: Text(
+                      b.name,
+                      style: TextStyle(
+                        color: t.ink,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 );
@@ -663,161 +783,258 @@ class _SingleCardsState extends State<_SingleCards> {
         ),
       ),
     );
+
+    if (selectedBinderId == null) return;
+    final either = await context.read<BinderBloc>().addCardToBinder(
+      selectedBinderId,
+      catalogCardId,
+    );
+    if (!mounted) return;
+    either.match(
+      (failure) => ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(failure.error))),
+      (_) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Added to binder ✓')));
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final store = context.watch<Store>();
     final nav = context.read<Nav>();
     final t = theme.exchange;
-
-    final owned =
-        store.collection.entries
-            .where((e) => e.value > 0)
-            .map(
-              (e) => (
-                card: store.cards[e.key],
-                qty: e.value,
-                assigned: store.assignedCount(e.key),
-              ),
-            )
-            .where(
-              (x) => x.card != null && (game == 'All' || x.card!.game == game),
-            )
-            .toList()
-          ..sort(
-            (a, b) => (b.card!.price * b.qty).compareTo(a.card!.price * a.qty),
-          );
-
-    final gamesOwned = [
-      'All',
-      ...games.where(
-        (g) => store.collection.entries.any(
-          (e) => e.value > 0 && store.cards[e.key]?.game == g,
-        ),
-      ),
-    ];
+    final collectionAsync = context.watch<CollectionBloc>().state.myCollection;
+    final priceCategory = context.watch<PriceCategoryBloc>().state.category;
+    final binderNames = context.watch<BinderBloc>().state.cardBinderNames.valueOrNull ?? {};
 
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: gamesOwned.map((g) {
-              return GestureDetector(
-                onTap: () => setState(() => game = g),
-                child: ui.Chip(
-                  label: g == 'Magic: The Gathering' ? 'MTG' : g,
-                  bg: game == g ? t.panel : null,
-                  color: game == g ? theme.gold : t.muted,
-                  border: game == g ? null : t.line,
-                ),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 10),
-          ...owned.map((x) {
-            final card = x.card!;
-            final free = x.qty - x.assigned;
-            return Container(
-              padding: const EdgeInsets.symmetric(vertical: 9),
-              decoration: BoxDecoration(
-                border: Border(bottom: BorderSide(color: t.line)),
-              ),
-              child: Row(
-                children: [
-                  ui.CardThumb(cardId: card.id, w: 38, h: 53),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: () => nav.push(NavOverlay.card(card.id)),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text.rich(
-                            TextSpan(
-                              children: [
-                                TextSpan(
-                                  text: card.name,
-                                  style: TextStyle(
-                                    color: t.ink,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                if (x.qty > 1)
-                                  TextSpan(
-                                    text: ' ×${x.qty}',
-                                    style: TextStyle(
-                                      color: theme.gold,
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          Text(
-                            '${card.game} · ${x.assigned > 0 ? '${x.assigned} in binders · ' : ''}$free loose',
-                            style: TextStyle(color: t.muted, fontSize: 11.5),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '\$${fmt(card.price * x.qty)}',
-                        style: TextStyle(
-                          color: t.ink,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 5),
-                      Opacity(
-                        opacity: free < 1 ? 0.4 : 1,
-                        child: GestureDetector(
-                          onTap: free < 1 ? null : () => _openAssign(card.id),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 5,
-                            ),
-                            decoration: BoxDecoration(
-                              color: theme.gold,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Text(
-                              '→ binder',
-                              style: TextStyle(
-                                color: Color(0xFF0B0E11),
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            );
-          }),
-          Padding(
-            padding: const EdgeInsets.only(top: 10),
+      child: collectionAsync.when(
+        initial: () => const Padding(
+          padding: EdgeInsets.symmetric(vertical: 24),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        loading: () => const Padding(
+          padding: EdgeInsets.symmetric(vertical: 24),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        error: (e, _) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Center(
             child: Text(
-              'Every scan and market buy lands here — assign copies into game-matching binders.',
-              style: TextStyle(color: t.muted, fontSize: 11),
+              e is Failure ? e.error : e.toString(),
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12.5),
               textAlign: TextAlign.center,
             ),
           ),
-        ],
+        ),
+        data: (items) {
+          if (items.isEmpty) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: ui.EmptyState(
+                image: 'assets/illustrations/empty-listings.png',
+                text:
+                    'Nothing in your collection yet — scan a card to get started.',
+              ),
+            );
+          }
+
+          final gamesOwned = [
+            'All',
+            ...{
+              for (final i in items)
+                api.GameApiValue.fromApiValue(i.catalogCard.game).label,
+            },
+          ];
+          final owned =
+              items
+                  .where(
+                    (i) =>
+                        game == 'All' ||
+                        api.GameApiValue.fromApiValue(
+                              i.catalogCard.game,
+                            ).label ==
+                            game,
+                  )
+                  .toList()
+                ..sort(
+                  (a, b) =>
+                      ((b.catalogCard.priceFor(priceCategory) ?? 0) *
+                              b.quantity)
+                          .compareTo(
+                            (a.catalogCard.priceFor(priceCategory) ?? 0) *
+                                a.quantity,
+                          ),
+                );
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: gamesOwned.map((g) {
+                  return GestureDetector(
+                    onTap: () => setState(() => game = g),
+                    child: ui.Chip(
+                      label: gameShort[g] ?? g,
+                      bg: game == g ? t.panel : null,
+                      color: game == g ? theme.gold : t.muted,
+                      border: game == g ? null : t.line,
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 10),
+              ...owned.map((item) {
+                final card = item.catalogCard;
+                final cardGame = api.GameApiValue.fromApiValue(card.game);
+                return Container(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  decoration: BoxDecoration(
+                    border: Border(bottom: BorderSide(color: t.line)),
+                  ),
+                  child: Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: Image.network(
+                          card.imageUrl,
+                          width: 38,
+                          height: 53,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, err, stack) =>
+                              Container(width: 38, height: 53, color: t.panel),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(
+                                    text: card.name,
+                                    style: TextStyle(
+                                      color: t.ink,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  if (item.quantity > 1)
+                                    TextSpan(
+                                      text: ' ×${item.quantity}',
+                                      style: TextStyle(
+                                        color: theme.gold,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            Text(
+                              '${cardGame.label} · ${card.setName}',
+                              style: TextStyle(color: t.muted, fontSize: 11.5),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            '\$${fmt((card.priceFor(priceCategory) ?? 0) * item.quantity)}',
+                            style: TextStyle(
+                              color: t.ink,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Builder(
+                            builder: (_) {
+                              final inBinders =
+                                  binderNames[item.catalogCardId] ?? const [];
+                              if (inBinders.isEmpty) {
+                                return GestureDetector(
+                                  onTap: () =>
+                                      _openAssign(item.catalogCardId, cardGame),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 5,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: theme.gold,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: const Text(
+                                      '→ binder',
+                                      style: TextStyle(
+                                        color: Color(0xFF0B0E11),
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }
+                              final label = inBinders.length > 1
+                                  ? '${inBinders.first.name} +${inBinders.length - 1}'
+                                  : inBinders.first.name;
+                              return GestureDetector(
+                                onTap: () => nav.push(
+                                  NavOverlay.binder(inBinders.first.id),
+                                ),
+                                child: Container(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 96,
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 5,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    border: Border.all(color: t.line),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    label,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: t.muted,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }),
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  'Every scan lands here — assign copies into game-matching binders.',
+                  style: TextStyle(color: t.muted, fontSize: 11),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
