@@ -13,6 +13,8 @@ class ApiEndpoints {
   static const String signals = "$baseUrl/me/signals";
   static const String profile = "$baseUrl/me/profile";
 
+  static const String billingVerify = "$baseUrl/billing/verify";
+
   static const String listings = "$baseUrl/listings";
 
   static const String binders = "$baseUrl/binders";

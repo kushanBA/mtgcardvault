@@ -12,8 +12,10 @@ import 'data/types.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/bloc/auth_event.dart';
 import 'features/auth/presentation/bloc/auth_state.dart';
+import 'features/billing/presentation/bloc/billing_bloc.dart';
 import 'features/binders/presentation/bloc/binder_bloc.dart';
 import 'features/collection/presentation/bloc/collection_bloc.dart';
+import 'features/profile/presentation/bloc/profile_bloc.dart';
 import 'nav.dart';
 import 'presentation/screens/binder_detail_screen.dart';
 import 'presentation/screens/binders_screen.dart';
@@ -22,7 +24,7 @@ import 'presentation/screens/compare_screen.dart';
 import 'presentation/screens/deal_radar_screen.dart';
 import 'presentation/screens/home_screen.dart';
 import 'presentation/screens/login_screen.dart';
-import 'presentation/screens/onboarding_screen.dart';
+import 'presentation/screens/onboarding/onboarding_flow.dart';
 import 'presentation/screens/profile_screen.dart';
 import 'presentation/screens/quick_sell_sheet.dart';
 import 'presentation/screens/register_screen.dart';
@@ -31,6 +33,7 @@ import 'presentation/screens/scan_screen.dart';
 import 'presentation/screens/search_screen.dart';
 import 'presentation/screens/show_mode_screen.dart';
 import 'presentation/screens/signals_screen.dart';
+import 'presentation/screens/subscription_screen.dart';
 import 'theme.dart' as theme;
 
 void main() async {
@@ -48,6 +51,11 @@ void main() async {
         BlocProvider(create: (_) => sl<PriceCategoryBloc>()..add(const RestorePriceCategory())),
         BlocProvider(create: (_) => sl<BinderBloc>()),
         BlocProvider(create: (_) => sl<CollectionBloc>()),
+        // Profile and Billing are root-scoped (not just post-login) because
+        // onboarding's Save-your-vault/Paywall steps need them the moment
+        // sign-in succeeds, before _AuthGate would otherwise provide them.
+        BlocProvider(create: (_) => sl<ProfileBloc>()),
+        BlocProvider(create: (_) => sl<BillingBloc>()),
       ],
       child: const CardVaultApp(),
     ),
@@ -85,7 +93,7 @@ class _CardVaultAppState extends State<CardVaultApp> {
     if (onboarded == null) {
       child = Container(color: theme.light.bg);
     } else if (!onboarded!) {
-      child = OnboardingScreen(onDone: _finishOnboarding);
+      child = OnboardingFlow(onDone: _finishOnboarding);
     } else {
       child = const _AuthGate();
     }
@@ -206,6 +214,8 @@ class _ShellState extends State<_Shell> {
         return const SearchScreen();
       case NavOverlayType.scanForBinder:
         return ScanScreen(targetBinderId: o.binderId);
+      case NavOverlayType.subscription:
+        return const SubscriptionScreen();
     }
   }
 

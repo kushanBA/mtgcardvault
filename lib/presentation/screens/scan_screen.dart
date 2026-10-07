@@ -13,6 +13,9 @@ import '../../features/binders/domain/entities/binder.dart' as binders;
 import '../../features/binders/presentation/bloc/binder_bloc.dart';
 import '../../features/binders/presentation/bloc/binder_event.dart';
 import '../../features/collection/presentation/bloc/collection_bloc.dart';
+import '../../features/profile/domain/entities/profile.dart';
+import '../../features/profile/presentation/bloc/profile_bloc.dart';
+import '../../features/profile/presentation/bloc/profile_event.dart';
 import '../../features/scan/domain/entities/card.dart';
 import '../../features/scan/domain/usecases/scan_card.dart';
 import '../../nav.dart';
@@ -92,6 +95,94 @@ class _ScanScreenState extends State<ScanScreen> {
         binderBloc.add(LoadBinderDetail(targetBinderId));
       }
     }
+    final profileBloc = context.read<ProfileBloc>();
+    if (profileBloc.state.profile is ResourceInitial) {
+      profileBloc.add(const LoadProfile());
+    }
+  }
+
+  /// The absolute most burst mode ever allows, further capped by how many
+  /// free scans are left for a non-premium account.
+  int _burstMax(Profile? profile) {
+    if (profile == null || profile.isPremium) return _burstMaxCards;
+    return profile.scansRemaining < _burstMaxCards ? profile.scansRemaining : _burstMaxCards;
+  }
+
+  Future<void> _showScanLimitDialog() async {
+    final t = theme.cameraTheme;
+    final upgrade = await showDialog<bool>(
+      context: context,
+      barrierColor: const Color(0x8C000000),
+      builder: (ctx) => Dialog(
+        backgroundColor: t.panel,
+        insetPadding: const EdgeInsets.all(24),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFF3A3F47)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "You've used all your free scans",
+                style: TextStyle(color: t.ink, fontWeight: FontWeight.w700, fontSize: 15),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Upgrade to Premium for unlimited scans.',
+                style: TextStyle(color: t.muted, fontSize: 12.5),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () => Navigator.of(ctx).pop(false),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 11),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          border: Border.all(color: const Color(0xFF3A3F47)),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          'Not now',
+                          style: TextStyle(color: t.muted, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () => Navigator.of(ctx).pop(true),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 11),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: t.gold,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Text(
+                          'Upgrade',
+                          style: TextStyle(color: Color(0xFF131316), fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (upgrade == true && mounted) {
+      context.read<Nav>().push(NavOverlay.subscription());
+    }
   }
 
   Future<void> _initCamera() async {
@@ -124,6 +215,11 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Future<void> _runScan() async {
     if (scanning || controller == null || !cameraReady) return;
+    final profile = context.read<ProfileBloc>().state.profile.valueOrNull;
+    if (profile != null && profile.hasReachedScanLimit) {
+      _showScanLimitDialog();
+      return;
+    }
     setState(() {
       scanning = true;
       result = null;
@@ -148,16 +244,22 @@ class _ScanScreenState extends State<ScanScreen> {
       final either = await scanCard(File(photo.path));
       if (_disposed) return;
       either.match(
-        (failure) => setState(() {
-          log('failure');
-          error = failure.error;
-          scanning = false;
-        }),
-        (r) => setState(() {
-          log('corrected');
-          result = r;
-          scanning = false;
-        }),
+        (failure) {
+          setState(() {
+            log('failure');
+            error = failure.error;
+            scanning = false;
+          });
+          if (failure.code == 402) _showScanLimitDialog();
+        },
+        (r) {
+          setState(() {
+            log('corrected');
+            result = r;
+            scanning = false;
+          });
+          context.read<ProfileBloc>().add(const LoadProfile());
+        },
       );
     } catch (e) {
       if (_disposed) return;
@@ -169,6 +271,13 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   void _toggleBurstMode() {
+    if (!burstMode) {
+      final profile = context.read<ProfileBloc>().state.profile.valueOrNull;
+      if (profile != null && profile.hasReachedScanLimit) {
+        _showScanLimitDialog();
+        return;
+      }
+    }
     setState(() {
       burstMode = !burstMode;
       _burstProcessing = false;
@@ -179,10 +288,12 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Future<void> _captureBurst() async {
     if (controller == null || !cameraReady) return;
-    if (_burstImages.length >= _burstMaxCards) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Burst mode is limited to $_burstMaxCards cards')),
-      );
+    final profile = context.read<ProfileBloc>().state.profile.valueOrNull;
+    final max = _burstMax(profile);
+    if (_burstImages.length >= max) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Burst mode is limited to $max cards')));
       return;
     }
     try {
@@ -207,12 +318,23 @@ class _ScanScreenState extends State<ScanScreen> {
       _burstResults = images.map((f) => _BurstItem(image: f)).toList();
     });
     final scanCard = sl<ScanCard>();
+    var limitHit = false;
     for (var i = 0; i < images.length; i++) {
+      if (limitHit) {
+        setState(() {
+          _burstResults[i] = _burstResults[i].copyWith(
+            status: _BurstStatus.error,
+            error: 'Free scan limit reached',
+          );
+        });
+        continue;
+      }
       final either = await scanCard(images[i]);
       if (_disposed) return;
       setState(() {
         either.match(
           (failure) {
+            if (failure.code == 402) limitHit = true;
             _burstResults[i] = _burstResults[i].copyWith(
               status: _BurstStatus.error,
               error: failure.error,
@@ -227,6 +349,9 @@ class _ScanScreenState extends State<ScanScreen> {
         );
       });
     }
+    if (!mounted) return;
+    context.read<ProfileBloc>().add(const LoadProfile());
+    if (limitHit) _showScanLimitDialog();
   }
 
   void _resetBurst() {
@@ -477,6 +602,8 @@ class _ScanScreenState extends State<ScanScreen> {
     final nav = context.read<Nav>();
     final t = theme.cameraTheme;
     final priceCategory = context.watch<PriceCategoryBloc>().state.category;
+    final profile = context.watch<ProfileBloc>().state.profile.valueOrNull;
+    final burstMax = _burstMax(profile);
 
     return Container(
       color: t.bg,
@@ -571,6 +698,17 @@ class _ScanScreenState extends State<ScanScreen> {
                     ),
                   ],
                 ),
+                if (profile != null && !profile.isPremium)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '${profile.scansRemaining} free scan${profile.scansRemaining == 1 ? '' : 's'} left',
+                      style: TextStyle(
+                        color: profile.scansRemaining == 0 ? Colors.redAccent : t.muted,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ),
                 if (widget.targetBinderId != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
@@ -705,9 +843,9 @@ class _ScanScreenState extends State<ScanScreen> {
                   ? Center(
                       child: Text(
                         _burstImages.isEmpty
-                            ? 'Burst mode — capture up to $_burstMaxCards cards, then finish'
-                            : _burstImages.length >= _burstMaxCards
-                            ? '$_burstMaxCards photos captured — limit reached, tap Finish'
+                            ? 'Burst mode — capture up to $burstMax cards, then finish'
+                            : _burstImages.length >= burstMax
+                            ? '$burstMax photos captured — limit reached, tap Finish'
                             : '${_burstImages.length} photo${_burstImages.length == 1 ? '' : 's'} captured',
                         style: TextStyle(color: t.muted, fontSize: 12.5),
                       ),
@@ -924,8 +1062,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 children: [
                   Expanded(
                     child: GestureDetector(
-                      onTap:
-                          cameraReady && _burstImages.length < _burstMaxCards
+                      onTap: cameraReady && _burstImages.length < burstMax
                           ? _captureBurst
                           : null,
                       child: Container(
@@ -937,13 +1074,9 @@ class _ScanScreenState extends State<ScanScreen> {
                           border: Border.all(color: const Color(0xFF3A3F47)),
                         ),
                         child: Text(
-                          _burstImages.length >= _burstMaxCards
-                              ? 'Limit reached'
-                              : 'Capture',
+                          _burstImages.length >= burstMax ? 'Limit reached' : 'Capture',
                           style: TextStyle(
-                            color: _burstImages.length >= _burstMaxCards
-                                ? t.muted
-                                : t.ink,
+                            color: _burstImages.length >= burstMax ? t.muted : t.ink,
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
                           ),

@@ -14,6 +14,16 @@ import '../../features/auth/domain/usecases/logout_usecase.dart';
 import '../../features/auth/domain/usecases/register_usecase.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
 
+import '../../features/billing/data/datasources/billing_remote_data_source.dart';
+import '../../features/billing/data/repositories/billing_repository_impl.dart';
+import '../../features/billing/domain/repositories/billing_repository.dart';
+import '../../features/billing/domain/usecases/get_subscription_plans.dart';
+import '../../features/billing/domain/usecases/purchase_subscription.dart';
+import '../../features/billing/domain/usecases/restore_purchases.dart';
+import '../../features/billing/domain/usecases/verify_purchase.dart';
+import '../../features/billing/domain/usecases/watch_purchase_updates.dart';
+import '../../features/billing/presentation/bloc/billing_bloc.dart';
+
 import '../../features/binders/data/datasources/binder_remote_data_source.dart';
 import '../../features/binders/data/repositories/binder_repository_impl.dart';
 import '../../features/binders/domain/repositories/binder_repository.dart';
@@ -64,12 +74,15 @@ final sl = GetIt.instance;
 /// Wires up every datasource/repository/usecase and Bloc. Called once in
 /// `main()` before `runApp`.
 ///
-/// Auth, price category, binders and collection are registered as
-/// [GetIt.registerLazySingleton] and provided once at the app root (see
-/// `main.dart`) — their state is shared across tabs (e.g. adding a card to a
-/// binder from Scan must be reflected on the Binders tab). Profile, signals
-/// and listings are only ever read from a single screen each, so they're
-/// registered as [GetIt.registerFactory] and scoped to that screen instead.
+/// Auth, price category, binders, collection, profile and billing are
+/// registered as [GetIt.registerLazySingleton] and provided once at the app
+/// root (see `main.dart`) — their state is shared across tabs (e.g. adding a
+/// card to a binder from Scan must be reflected on the Binders tab; a
+/// verified purchase in `BillingBloc` refreshes the same `ProfileBloc` the
+/// Profile tab reads, even though the purchase happens on a different
+/// screen). Signals and listings are only ever read from a single screen
+/// each, so they're registered as [GetIt.registerFactory] and scoped to that
+/// screen instead.
 Future<void> setupInjector() async {
   sl.registerLazySingleton<Dio>(createDio);
 
@@ -129,12 +142,31 @@ Future<void> setupInjector() async {
   sl.registerLazySingleton(() => GetMyCollection(sl()));
   sl.registerLazySingleton(() => CollectionBloc(getMyCollection: sl(), addToCollection: sl()));
 
-  // Profile — screen-scoped
+  // Profile
   sl.registerLazySingleton<ProfileRemoteDataSource>(() => ProfileRemoteDataSourceImpl(sl()));
   sl.registerLazySingleton<ProfileRepository>(() => ProfileRepositoryImpl(remote: sl()));
   sl.registerLazySingleton(() => GetProfile(sl()));
   sl.registerLazySingleton(() => UpdatePriceAlerts(sl()));
-  sl.registerFactory(() => ProfileBloc(getProfile: sl(), updatePriceAlerts: sl()));
+  sl.registerLazySingleton(() => ProfileBloc(getProfile: sl(), updatePriceAlerts: sl()));
+
+  // Billing
+  sl.registerLazySingleton<BillingRemoteDataSource>(() => BillingRemoteDataSourceImpl(sl()));
+  sl.registerLazySingleton<BillingRepository>(() => BillingRepositoryImpl(remote: sl()));
+  sl.registerLazySingleton(() => GetSubscriptionPlans(sl()));
+  sl.registerLazySingleton(() => PurchaseSubscription(sl()));
+  sl.registerLazySingleton(() => RestorePurchases(sl()));
+  sl.registerLazySingleton(() => VerifyPurchase(sl()));
+  sl.registerLazySingleton(() => WatchPurchaseUpdates(sl()));
+  sl.registerLazySingleton(
+    () => BillingBloc(
+      getSubscriptionPlans: sl(),
+      purchaseSubscription: sl(),
+      restorePurchases: sl(),
+      verifyPurchase: sl(),
+      watchPurchaseUpdates: sl(),
+      profileBloc: sl(),
+    ),
+  );
 
   // Signals — screen-scoped
   sl.registerLazySingleton<SignalsRemoteDataSource>(() => SignalsRemoteDataSourceImpl(sl()));

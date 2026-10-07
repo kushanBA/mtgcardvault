@@ -14,6 +14,7 @@ enum NavOverlayType {
   show,
   search,
   scanForBinder,
+  subscription,
 }
 
 class NavOverlay {
@@ -57,6 +58,8 @@ class NavOverlay {
       const NavOverlay._(type: NavOverlayType.search);
   factory NavOverlay.scanForBinder(String binderId) =>
       NavOverlay._(type: NavOverlayType.scanForBinder, binderId: binderId);
+  factory NavOverlay.subscription() =>
+      const NavOverlay._(type: NavOverlayType.subscription);
 }
 
 class Nav extends ChangeNotifier {

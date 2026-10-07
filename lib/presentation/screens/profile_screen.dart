@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart' hide Card;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../data/store.dart';
-import '../../core/di/injector.dart';
+import '../../core/bloc/resource.dart';
 import '../../core/error/failure.dart';
 import '../../core/pricing/bloc/price_category_bloc.dart';
 import '../../core/pricing/bloc/price_category_event.dart';
@@ -10,6 +10,7 @@ import '../../features/auth/presentation/bloc/auth_bloc.dart';
 import '../../features/auth/presentation/bloc/auth_event.dart';
 import '../../features/profile/presentation/bloc/profile_bloc.dart';
 import '../../features/profile/presentation/bloc/profile_event.dart';
+import '../../nav.dart';
 import '../../theme.dart' as theme;
 
 String _initials(String name) {
@@ -24,34 +25,33 @@ String _initials(String name) {
       .toUpperCase();
 }
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return BlocProvider(
-      create: (_) => sl<ProfileBloc>()..add(const LoadProfile()),
-      child: const _ProfileView(),
-    );
-  }
+  State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileView extends StatefulWidget {
-  const _ProfileView();
-
-  @override
-  State<_ProfileView> createState() => _ProfileViewState();
-}
-
-class _ProfileViewState extends State<_ProfileView> {
+class _ProfileScreenState extends State<ProfileScreen> {
   bool resetDone = false;
   bool alertsSaving = false;
 
   @override
+  void initState() {
+    super.initState();
+    final bloc = context.read<ProfileBloc>();
+    if (bloc.state.profile is ResourceInitial) {
+      bloc.add(const LoadProfile());
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final store = context.watch<Store>();
+    final nav = context.read<Nav>();
     final selectedPriceCat = context.watch<PriceCategoryBloc>().state.category;
     final profileAsync = context.watch<ProfileBloc>().state.profile;
+    final isPremium = profileAsync.valueOrNull?.isPremium ?? false;
     final t = theme.light;
     final publicBinders = store.binders.where((b) => b.isPublic).length;
 
@@ -258,6 +258,12 @@ class _ProfileViewState extends State<_ProfileView> {
             ),
             child: Column(
               children: [
+                row(
+                  'Premium',
+                  isPremium ? 'active ✓' : 'unlock unlimited scans, Signals + Deal Radar',
+                  color: isPremium ? t.up : t.accent,
+                  onTap: isPremium ? null : () => nav.push(NavOverlay.subscription()),
+                ),
                 row('Currency', 'USD \$', onTap: () {}),
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 3),
